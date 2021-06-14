@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <time.h>
 // #include <bits/stdc++.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -29,22 +30,22 @@ unordered_set<int> availableRooms;
 unordered_map<int, string> roomNames;
 unordered_map<int, unordered_set<string> > roomMembers;
 
-unordered_map<int, vector<sem_t*> > roomSemaphores; 
+unordered_map<int, unordered_map<string, sem_t*> > roomSemaphores; 
 
 unordered_map<int, string> fd_user_map;
 unordered_map<string, int> user_fd_map;
 unordered_map<string, int> user_room_map;
-unordered_map<thread.id, string> thread_users;
+unordered_map<thread::id, string> thread_users;
 unordered_map<string, thread::id> user_threads;
 unordered_set<string> active_users;
 unordered_set<string> available_users;
 
-void sendMessage(int &fd, string s){
-	char* arr = new char[s.size() + 1];
-	strcpy(arr, s.c_str());
-	write(fd, arr, strlen(arr));
-	delete[] arr;
-}
+// void sendMessage(int &fd, string s){
+// 	char* arr = new char[s.size() + 1];
+// 	strcpy(arr, s.c_str());
+// 	write(fd, arr, strlen(arr));
+// 	delete[] arr;
+// }
 
 void sendMsgToUser(string s, string t){
 	int fd = user_fd_map[t];
@@ -71,24 +72,60 @@ void closeSocket(int &fd){
 // room_id => set(usernames);
 void playingArea(int room_id){
 	unordered_set<string> :: iterator it;
+	unordered_map<string, int> player_amount;
 	for(it = roomMembers[room_id].begin(); it != roomMembers[room_id].end(); it++)
 	{
 		int fd = user_fd_map[*it];
+		player_amount[*it] = 2000;
 		sendMessage(fd, "Welcome to the playing area !!\n");
 	}
 
-	set<Card*> pack_cards;  // the ones still in pack -> unfolded
-	set<Card*> table_cards;  // the ones still in pack -> unfolded
-	set<Card*> p1_cards;  // the ones with player 1
-	set<Card*> p2_cards;  // the ones with player 2
-	set<Card*> p3_cards;  // the ones with player 3
-	set<Card*> p4_cards;  // the ones with player 4
+	int numPlayers = roomMembers[room_id].size();
 
-	initPack(pack_cards);
-    initPlayers(pack_cards, p1_cards);
-	
+	while (roomMembers[room_id].size() > 1) {
+    
+		vector<int> list_fd;
+		set<Card*> pack_cards;  // the ones still in pack -> unfolded
+		set<Card*> table_cards;  // the ones still in pack -> unfolded
+		unordered_map<int, set<Card*> > p_cards;
+
+		for(auto fd : list_fd){
+			sendMessage(fd, FLUSH);
+			sendMessage(fd, "Now Starting New Game\n");
+			this_thread::sleep_for(chrono::milliseconds(1000));
+		}
+
+		for(auto it = roomMembers[room_id].begin(); it != roomMembers[room_id].end(); it++){
+			set<Card*> temp;
+			list_fd.push_back(user_fd_map[*it]);
+			p_cards[user_fd_map[*it]] = temp;
+		}
+
+		int pot = 100 * roomMembers[room_id].size();
+		initPack(pack_cards);
+		initPlayers(pack_cards, p_cards, user_fd_map, player_amount, list_fd);
+		for (int roundN = 1; roundN < 4; roundN++){
+			bool f = play_Round(roundN, pack_cards, table_cards, list_fd, player_amount, fd_user_map, p_cards, pot);
+			if (f == 0) // -1 code : only one user on table
+				break;
+		}
+
+		unordered_set<string> presentPlayers;
+		for(auto it = roomMembers[room_id].begin(); it != roomMembers[room_id].end(); it++){
+			if (player_amount[*it] > 100){
+				presentPlayers.insert(*it);
+			}
+			else{
+				sendMessage(user_fd_map[*it], "You have been eliminated due to insufficient balance! Thanks for playing :)\n");
+				// sem_post(roomSemaphores[room_id][*it]);
+			}
+		}
+		roomMembers[room_id] = presentPlayers;
+	}
+
+	// sem_post(roomSemaphores[room_id][*(roomMembers[room_id].begin())]);
 }
-// loop(init => blind => flop + play_round1 => turn + play r2 => river + play r3 => judgement)
+// loop(initPack => initPlayers => blind => flop + play_round1 => turn + play r2 => river + play r3 => judgement)
 
 
 // 0th client => fdsocket -> send() -> reply() -> 1th client
@@ -99,9 +136,9 @@ void waitingArea(int fd, string username, int room_id){
 	sem_t temp_sem;
 	sem_init(&temp_sem, 0, 0);
 
-	roomSemaphores[room_id].push_back(&temp_sem);
+	roomSemaphores[room_id][username] = &temp_sem;
 
-	if (roomMembers[room_id].size() < 4){
+	if (roomMembers[room_id].size() < 2){
 		sem_wait(&temp_sem);
 	}
 	else{
@@ -232,7 +269,8 @@ void* serveClient(void* fd) {
 }
 
 int main() {
-	int lstnsockfd, consockfd, portno = 4321;
+	srand(time(NULL));
+	int lstnsockfd, consockfd, portno = 9010;
 	unsigned int clilen;
 	struct sockaddr_in serv_addr, cli_addr;
 
