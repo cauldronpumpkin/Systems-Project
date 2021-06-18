@@ -57,6 +57,26 @@ set<Card*> pack_cards;  // the ones still in pack -> unfolded
 // set<Card*> p4_cards;  // the ones with player 4
 
 
+size_t split(string txt, vector<string> &strs, char ch)
+{
+    size_t pos = txt.find( ch );
+    size_t initialPos = 0;
+    strs.clear();
+
+    // Decompose statement
+    while( pos != string::npos ) {
+        strs.push_back( txt.substr( initialPos, pos - initialPos ) );
+        initialPos = pos + 1;
+
+        pos = txt.find( ch, initialPos );
+    }
+
+    // Add the last one
+    strs.push_back( txt.substr( initialPos, min( pos, txt.size() ) - initialPos + 1 ) );
+
+    return strs.size();
+}
+
 void initPack(set<Card*> &pack_cards){
     // clear pack if set initially
     char S[] = {'s', 'h', 'c', 'd'};
@@ -204,75 +224,106 @@ bool play_Round(int roundN, set<Card*> &pack_cards, set<Card*> &table_cards, vec
 
     printTable(table_cards, list_fd);
 
-    string clientMsg = "\nYour Money = " + to_string(player_amount[fd_user_map[player_in_action]]) + "\n";
-    sendMessage(player_in_action, clientMsg);
-    
-    sendMessage(player_in_action, "\nPlace your bet: \n");
+    int max_bet = -1;
+    unordered_map<int, int> bets;
 
-    char reqbuf[MAXREQ];
-    memset(reqbuf, 0, MAXREQ);
-	read(player_in_action, reqbuf, MAXREQ-1);
+    while (!bets.count(player_in_action) || bets[player_in_action] < max_bet)
+    {
+        if (max_bet > bets[player_in_action])
+        {
+            string clientMsg = "\nYour Money = " + to_string(player_amount[fd_user_map[player_in_action]]) + "\n";
+            sendMessage(player_in_action, clientMsg);
+            
+            sendMessage(player_in_action, "\nCurrent bet: " + to_string(max_bet) + "\nDo you wanna raise [y/n]?\n");
 
-    int bet;
-	string msg = string(reqbuf);
-    if (msg != "")
-        bet = stoi(msg);
-    else
-        return 0;
+            char reqbuf[MAXREQ];
+            memset(reqbuf, 0, MAXREQ);
+            read(player_in_action, reqbuf, MAXREQ-1);
 
-    player_amount[fd_user_map[player_in_action]] -= bet;
+            string msg = string(reqbuf);
 
-    pot += bet;
-
-    // player 2 3 4
-    // loop
-    for(int i = 1; i < list_fd.size(); i++){
-        player_in_action = list_fd[i];
-        string clientMsg = "Your Money = " + to_string(player_amount[fd_user_map[player_in_action]]) + "\nPresent bet = " + to_string(bet) + "\nMake a choice:\nc:Call\nr:Raise <bet>\nf:Fold\n";
-        sendMessage(player_in_action, clientMsg);
-        
-        memset(reqbuf, 0, MAXREQ);
-        read(player_in_action, reqbuf, MAXREQ-1);
-
-        msg = string(reqbuf);
-        
-        if(msg[0] == 'c'){
-            player_amount[fd_user_map[player_in_action]] -= bet;
-            pot += bet;
+            if (msg == "y")
+            {
+                player_amount[fd_user_map[player_in_action]] -= max_bet - bets[player_in_action];
+                bets[player_in_action] = max_bet;
+            }
+            else
+            {
+                list_fd.erase(list_fd.begin());
+            }
         }
-        else if (msg[0] == 'f') {
-            list_fd.erase(list_fd.begin() + i);
-            i--;
+        else
+        {
+            string clientMsg = "\nYour Money = " + to_string(player_amount[fd_user_map[player_in_action]]) + "\n";
+            sendMessage(player_in_action, clientMsg);
+            
+            sendMessage(player_in_action, "\nPlace your bet: \n");
+            
+            char reqbuf[MAXREQ];
+            memset(reqbuf, 0, MAXREQ);
+            read(player_in_action, reqbuf, MAXREQ-1);
+
+            string msg = string(reqbuf);
+            if (msg != "")
+                bets[player_in_action] = stoi(msg);
+            else
+                return 0;
+
+            max_bet = bets[player_in_action];
+
+            player_amount[fd_user_map[player_in_action]] -= bets[player_in_action];
+
+            pot += bets[player_in_action];
         }
-        else{
-            char* arr = new char[msg.size() + 1];
-	        strcpy(arr, msg.c_str());
-            char* reply = strtok(arr, " ");
-            bet = stoi(to_string(reply[1]));
-            pot -= bet;
-            player_amount[fd_user_map[player_in_action]] -= bet;
+
+        for(int i = 1; i < list_fd.size(); i++){
+            player_in_action = list_fd[i];
+            
+            if (max_bet == bets[player_in_action])
+                continue;
+
+            string clientMsg = "Your Money = " + to_string(player_amount[fd_user_map[player_in_action]]) + "\nPresent bet = " + to_string(max_bet) + "\nMake a choice:\nc:Call\n<number>:Raise\nf:Fold\n";
+            sendMessage(player_in_action, clientMsg);
+            
+            char reqbuf[MAXREQ];
+            memset(reqbuf, 0, MAXREQ);
+            read(player_in_action, reqbuf, MAXREQ-1);
+
+            string msg = string(reqbuf);
+            
+            if(msg[0] == 'c'){
+                player_amount[fd_user_map[player_in_action]] -= max_bet;
+                pot += max_bet;
+            }
+            else if (msg[0] == 'f') {
+                list_fd.erase(list_fd.begin() + i);
+                i--;
+            }
+            else{
+                bets[player_in_action] = stoi(msg);
+                max_bet = bets[player_in_action];
+                cout << bets[player_in_action] << " " << max_bet << endl;
+                pot += bets[player_in_action];
+                player_amount[fd_user_map[player_in_action]] -= bets[player_in_action];
+            }
         }
+        player_in_action = list_fd[0];
+    }
+
+    if (list_fd.size() == 1)
+    {
+        player_amount[fd_user_map[list_fd[0]]] += pot;
+        sendMessage(list_fd[0], "You have won " + to_string(pot) + "\nWait for 5 Seconds\n");
+        sleep(5);
+        return -1;
     }
 
     if (roundN == 3){
         int fd = judge(list_fd); // args : p1, p2, p3 => "1 or 2 or 3"; winner_amount += pot ; pot=0;
         player_amount[fd_user_map[fd]] += pot;
-        sendMessage(fd, "You have won " + to_string(pot) + '\n');
+        sendMessage(fd, "You have won " + to_string(pot) + "\nWait for 5 Seconds\n");
+        sleep(5);
     }
 
     return 1;
 }
-
-// loop(init => blind => flop + play_round1 => turn + play r2 => river + play r3 => judgement)
-
-// int main(){
-//     initPack(pack_cards);
-//     // initPlayers();
-//     // set<Card*> :: iterator it;
-    
-//     printPack(pack_cards);
-
-    
-
-//     return 0;
-// }

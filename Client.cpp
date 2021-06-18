@@ -145,7 +145,7 @@ int main()
 	//Client protocol
 	// char serverIP[] = "192.168.29.51";
   char serverIP[] = "127.0.0.1";
-	int portno = 9010;
+	int portno = 9000;
 	struct sockaddr_in serv_addr;
 	
 	buildServerAddr(&serv_addr, serverIP, portno);

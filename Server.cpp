@@ -4,6 +4,8 @@
 #include <netinet/in.h>
 #include <time.h>
 // #include <bits/stdc++.h>
+#include <mutex>
+#include <condition_variable>
 #include <unordered_map>
 #include <unordered_set>
 #include <thread>
@@ -21,6 +23,30 @@ using namespace std;
 int n;
 char reqbuf[MAXREQ];
 
+class Semaphore {
+public:
+    Semaphore (int count_ = 0)
+    : count(count_) 
+    {
+    }
+    
+    inline void notify( int tid ) {
+        unique_lock<std::mutex> lock(mtx);
+        count++;
+        cv.notify_one();
+    }
+    inline void wait( string username ) {
+        unique_lock<mutex> lock(mtx);
+        while(count == 0) {
+            cv.wait(lock);
+        }
+        count--;
+    }
+private:
+    mutex mtx;
+    condition_variable cv;
+    int count;
+};
 
 unordered_map<pthread_t, pthread_cond_t> cond_map; 
 pthread_mutex_t mLock = PTHREAD_MUTEX_INITIALIZER; 
@@ -30,7 +56,7 @@ unordered_set<int> availableRooms;
 unordered_map<int, string> roomNames;
 unordered_map<int, unordered_set<string> > roomMembers;
 
-unordered_map<int, unordered_map<string, sem_t*> > roomSemaphores; 
+unordered_map<int, unordered_map<string, Semaphore*> > roomSemaphores; 
 
 unordered_map<int, string> fd_user_map;
 unordered_map<string, int> user_fd_map;
@@ -46,6 +72,8 @@ unordered_set<string> available_users;
 // 	write(fd, arr, strlen(arr));
 // 	delete[] arr;
 // }
+
+        
 
 void sendMsgToUser(string s, string t){
 	int fd = user_fd_map[t];
@@ -64,13 +92,13 @@ void closeSocket(int &fd){
 	user_threads.erase(user);
 	available_users.erase(user);
 
-	string closingMsg = "Socket has been closed.\n";
+	string closingMsg = "Successfully exited. You can close this terminal.\n";
 	sendMessage(fd, closingMsg);
 	close(fd);
 }
 
-// room_id => set(usernames);
 void playingArea(int room_id){
+
 	unordered_set<string> :: iterator it;
 	unordered_map<string, int> player_amount;
 	for(it = roomMembers[room_id].begin(); it != roomMembers[room_id].end(); it++)
@@ -117,35 +145,40 @@ void playingArea(int room_id){
 			}
 			else{
 				sendMessage(user_fd_map[*it], "You have been eliminated due to insufficient balance! Thanks for playing :)\n");
-				// sem_post(roomSemaphores[room_id][*it]);
+				roomSemaphores[room_id][*it]->notify(1);
 			}
 		}
 		roomMembers[room_id] = presentPlayers;
 	}
 
-	// sem_post(roomSemaphores[room_id][*(roomMembers[room_id].begin())]);
+	if (!roomMembers[room_id].empty())
+	{
+		sendMessage(user_fd_map[*(roomMembers[room_id].begin())], "You are the winner of this game! Congratulations!\n");
+		roomSemaphores[room_id][*(roomMembers[room_id].begin())]->notify(1);
+	}
 }
-// loop(initPack => initPlayers => blind => flop + play_round1 => turn + play r2 => river + play r3 => judgement)
-
-
-// 0th client => fdsocket -> send() -> reply() -> 1th client
 
 void waitingArea(int fd, string username, int room_id){
 	sendMessage(fd, "You have entered the Waiting Area !!\n");
 
-	sem_t temp_sem;
-	sem_init(&temp_sem, 0, 0);
 
-	roomSemaphores[room_id][username] = &temp_sem;
+	Semaphore *temp_sem = new Semaphore();
+	roomSemaphores[room_id][username] = temp_sem;
+
 
 	if (roomMembers[room_id].size() < 2){
-		sem_wait(&temp_sem);
+		temp_sem->wait(username);
 	}
 	else{
 		availableRooms.erase(room_id);
+		
 		thread dealer (playingArea, room_id);
-		sem_wait(&temp_sem);
+		temp_sem->wait(username);
+		
+		dealer.join();
 	}
+
+	return;
 }
 
 
@@ -153,7 +186,7 @@ void joinRoom(int fd, string username, int room_id) {
 	user_room_map[username] = room_id;
 	roomMembers[room_id].insert(username);
 
-	sendMessage(fd, "Welcome to Room: " + to_string(room_id));
+	sendMessage(fd, "Welcome to Room: " + to_string(room_id) + "\n");
 
 	waitingArea(fd, username, room_id);
 
@@ -162,6 +195,13 @@ void joinRoom(int fd, string username, int room_id) {
 
 
 void allAvailableRooms(int fd, string username, string instructionMsg){
+
+	if (availableRooms.size() == 0)
+	{
+		sendMessage(fd, "No rooms available. You can create one.\n");
+		return;
+	}
+
 	string availableRoomNumbers = "Rooms available: \n";
 
 	int i = 0;
@@ -176,7 +216,7 @@ void allAvailableRooms(int fd, string username, string instructionMsg){
 
 	memset(::reqbuf, 0, MAXREQ);
 	::n = read(fd, ::reqbuf, MAXREQ-1);
-
+	
 	string msg = string(reqbuf);
 
 	joinRoom(fd, username, temp_room_id[stoi(msg)]);
@@ -222,23 +262,28 @@ void* serveClient(void* fd) {
 
 	string instructionMsg = "1 Join a Random Room\n2 See all available Rooms\n3 Create a New Room\nq Quit\n";
 	string welcomeMsg = "Welcome " + username + " to Arcade Studio\n\n" + instructionMsg;
-	sendMessage(consockfd, welcomeMsg);
 
 	while (1)
 	{
+		sendMessage(consockfd, welcomeMsg);
+
 		memset(::reqbuf, 0, MAXREQ);
 		::n = read(consockfd, ::reqbuf, MAXREQ-1);
 
 		string msg = string(reqbuf);
 
-		if(user_room_map.find(username) == user_room_map.end()){
 			if (msg == "CLOSE")
-			closeSocket(consockfd);
+				closeSocket(consockfd);
 			
 			else if (msg == "1"){
-			// available_users.erase(username);
-			sendMessage(consockfd, "Type an available Room Id or ? for a random room.");
-			// joinRoom(consockfd, username);
+				if (availableRooms.size() == 0)
+					sendMessage(consockfd, "No rooms available. You can create one.\n");
+				else
+				{
+					int idx = rand() % availableRooms.size();
+					int room_id = *next(availableRooms.begin(), idx);
+					joinRoom(consockfd, username, room_id);
+				}
 			}
 			
 			else if (msg == "2"){
@@ -246,13 +291,10 @@ void* serveClient(void* fd) {
 			}
 			
 			else if (msg == "3"){
-			// available_users.erase(username);
 				createNewRoom(consockfd, username);
-				sendMessage(consockfd, "Welcome to Room: " + to_string(user_room_map[username]));
 			}
 			
 			else if (msg == "q" || msg == "Q" || msg == "q\n"){
-				cout << "clicked";
 				closeSocket(consockfd);
 				return NULL;
 			}
@@ -260,9 +302,9 @@ void* serveClient(void* fd) {
 			else{
 				sendMessage(consockfd, instructionMsg);
 			}
-		}
-		else {
-		};
+		// }
+		// else {
+		// };
 	}
 
 	return NULL;
@@ -270,7 +312,7 @@ void* serveClient(void* fd) {
 
 int main() {
 	srand(time(NULL));
-	int lstnsockfd, consockfd, portno = 9010;
+	int lstnsockfd, consockfd, portno = 9000;
 	unsigned int clilen;
 	struct sockaddr_in serv_addr, cli_addr;
 
